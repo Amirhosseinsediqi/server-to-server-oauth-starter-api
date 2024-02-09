@@ -82,7 +82,7 @@ app.use('/api/webinars', tokenCheck, require('./routes/api/webinars'));
   *    DELETE  /api/meetings/:meetingId/recordings --> delete meeting recordings -
   */
 
-const PORT = process.env.PORT || 8080;
+const PORT = process.env.PORT || 5500;
 
 const server = app.listen(PORT, () => console.log(`Listening on port ${[PORT]}!`));
 

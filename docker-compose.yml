@@ -11,7 +11,7 @@ services:
       context: ./
       target: dev
     ports:
-      - '8080:8080'
+      - '5501:5500'
     volumes:
       - .:/app
       - /app/node_modules
@@ -31,7 +31,7 @@ services:
       - .:/app
       - /app/node_modules
     ports:
-      - '8080:8080'
+      - '5500:5500'
     command: npm run start
     environment:
       NODE_ENV: production

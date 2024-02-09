@@ -2,7 +2,7 @@ FROM node:16-alpine as base
 
 WORKDIR /app
 COPY package*.json /
-EXPOSE 8080
+EXPOSE 5500
 
 FROM base as production
 ENV NODE_ENV=production
