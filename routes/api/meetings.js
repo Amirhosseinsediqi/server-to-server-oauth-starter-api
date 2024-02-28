@@ -1,23 +1,26 @@
 const express = require('express');
 const axios = require('axios');
 const qs = require('query-string');
-const path = require('path');
 const fs = require('fs');
-// const { Parser } = require('json2csv');
-
+const path = require('path');
+const { Parser } = require('json2csv');
+const moment = require('moment');
+const csv = require('csv-parser');
 
 
 const errorHandler = require('../../utils/errorHandler');
 const { ZOOM_API_BASE_URL } = require('../../constants');
-const outputPath = path.join(__dirname, '../../downloads'); // Adjust the path as needed
-const csvOutputPath = path.join(__dirname, '../../csvSaved'); // Adjust the path as neeeded for save csv files - output convertor json2csv
+const downloadJsonDir = '/app/downloads'; // Directory for downloads JSON files
+const savedCsvDir = '/app/savedCsv'; // Directory for save CSV files
+const processedCsvDir = '/app/csvProcessed'; // Directory for processed CSVs
 
-// Make sure the directory exists
-if (!fs.existsSync(csvOutputPath)) {
-    fs.mkdirSync(csvOutputPath, { recursive: true });
-}
 
 const router = express.Router();
+
+// Ensure the processedCsv directory exists
+if (!fs.existsSync(processedCsvDir)) {
+    fs.mkdirSync(processedCsvDir, { recursive: true });
+}
 
 /**
  * Get a meeting
@@ -83,41 +86,112 @@ router.delete('/:meetingId', async (req, res) => {
     }
 });
 
+// Utility function to read CSV file
+function readCsvFile(filePath) {
+    return new Promise((resolve, reject) => {
+        const results = [];
+        fs.createReadStream(filePath)
+            .pipe(csv({
+                mapHeaders: ({ header }) => header.toLowerCase().trim()
+            }))
+            .on('data', (data) => results.push(data))
+            .on('end', () => resolve(results))
+            .on('error', (error) => reject(error));
+    });
+}
+
+// Function to process Zoom participation from a CSV file
+async function processZoomParticipation(file_path, output_directory) {
+    const rows = await readCsvFile(file_path);
+    const joinLateCutoff = 10; // minutes after meeting start to consider as late
+    const participationCutoff = 90; // percent of the meeting duration to be considered as present
+
+    // Assuming the first participant's join time is the start of the meeting
+    const firstJoinTime = moment(rows[0]['join_time'], moment.ISO_8601);
+
+    let processedResults = rows.map(row => {
+        const joinTime = moment(row['join_time'], moment.ISO_8601);
+        const leaveTime = moment(row['leave_time'], moment.ISO_8601);
+        const durationMinutes = Math.round(moment.duration(leaveTime.diff(joinTime)).asMinutes());
+        const joinLateMinutes = Math.round(moment.duration(joinTime.diff(firstJoinTime)).asMinutes());
+
+        // Determine if the participant was late and if they participated enough
+        const wasLate = joinLateMinutes > joinLateCutoff;
+        const didParticipateEnough = durationMinutes >= participationCutoff;
+        const status = (!wasLate && didParticipateEnough) ? 'Present' : 'Absent';
+
+        return {
+            ...row,
+            'Status': status
+        };
+    });
+
+    // Convert processed results to CSV
+    const processedFilePath = path.join(output_directory, `processed_${path.basename(file_path)}`);
+    const fields = ['id', 'name', 'user_email', 'join_time', 'leave_time', 'duration', 'Status'];
+    const json2csvParser = new Parser({ fields });
+    const csv = json2csvParser.parse(processedResults);
+
+    fs.writeFileSync(processedFilePath, csv, 'utf8');
+    console.log(`Processed file saved to ${processedFilePath}`);
+}
 
 
 
 
-
-/**
- * Get meeting participant reports
- * https://developers.zoom.us/docs/api/rest/reference/zoom-api/methods/#operation/reportMeetingParticipants
- */
 router.get('/:meetingId/report/participants', async (req, res) => {
+    console.log(process.cwd());
     const { headerConfig, params, query } = req;
     const { meetingId } = params;
     const { next_page_token } = query;
 
     try {
-        // code to get the data and save the JSON file
-        const request = await axios.get(`${ZOOM_API_BASE_URL}/report/meetings/${meetingId}/participants?${qs.stringify({ next_page_token, })}`, headerConfig);
-        const data = request.data;
-        const filePath = path.join(outputPath, `${meetingId}_participants.json`);
+        const request = await axios.get(`${ZOOM_API_BASE_URL}/report/meetings/${meetingId}/participants?${qs.stringify({ next_page_token })}`, headerConfig);
 
-        // save JSON file
-        fs.writeFile(filePath, JSON.stringify(data, null, 2), (err) => {
-            if (err) {
-                console.error(`Failed to save the file: ${err}`);
-                return res.status(500).send('Failed to download the JSON file.');
-            }
-            console.log(`File saved successfully to ${filePath}`);
-            res.json(data); // Continue to send JSON response to the client
+        const directory = path.join(__dirname, downloadJsonDir);
+
+        const filePath = path.join(downloadJsonDir, `${meetingId}_participants.json`);
+        const csvFilePath = path.join(savedCsvDir, `${meetingId}_participants.csv`);
+
+        // Ensure the savedCsv directory exists
+        if (!fs.existsSync(savedCsvDir)) {
+            fs.mkdirSync(savedCsvDir, { recursive: true });
+        }
+
+        // Write the JSON file
+        fs.writeFileSync(filePath, JSON.stringify(request.data, null, 2), 'utf8');
+
+        // Process participants data for CSV conversion, ensuring the keys match the source data structure
+        const participants = request.data.participants.map(participant => {
+            return {
+                ...participant,
+                duration: Math.round(participant.duration / 60) // Adjusted to ensure whole number representation
+            };
         });
+
+        // Define fields for CSV, ensuring they match the participant object keys
+        const fields = ['id', 'name', 'user_email', 'join_time', 'leave_time', 'duration']; // Use 'duration' as adjusted
+        const json2csvParser = new Parser({ fields });
+        const csv = json2csvParser.parse(participants);
+
+        // Write the CSV file
+        fs.writeFileSync(csvFilePath, csv, 'utf8');
+
+        // Integrate delay calculation logic
+        await processZoomParticipation(csvFilePath, processedCsvDir);
+
+        res.send({
+            message: 'Files saved successfully',
+            jsonFilePath: filePath,
+            csvFilePath,
+            processedCsvPath: path.join(processedCsvDir, `processed_${meetingId}_participants.csv`)
+        });
+
     } catch (err) {
-        return errorHandler(err, res, `Error fetching participants for meeting: ${meetingId}`);
+        console.error('Error:', err);
+        errorHandler(err, res, `Error fetching participants for meeting: ${meetingId}`);
     }
 });
-
-
 
 /**
  * Delete meeting recordings

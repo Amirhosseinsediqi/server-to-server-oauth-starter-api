@@ -15,6 +15,10 @@ services:
     volumes:
       - .:/app
       - /app/node_modules
+      - ./downloads:/app/downloads
+      - ./savedCsv:/app/savedCsv
+      - ./csvProcessed:/app/csvProcessed
+
     command: npm run dev
     environment:
       NODE_ENV: development
@@ -30,6 +34,9 @@ services:
     volumes:
       - .:/app
       - /app/node_modules
+      - ./downloads:/app/downloads
+      - ./savedCsv:/app/savedCsv
+      - ./csvProcessed:/app/csvProcessed
     ports:
       - '5500:5500'
     command: npm run start
