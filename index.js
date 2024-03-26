@@ -3,14 +3,17 @@
  * never expose this .env file publicly
  */
 require('dotenv').config();
-
 const express = require('express');
 const cors = require('cors');
 const cookieParser = require('cookie-parser');
 const { debug } = require('node:console');
 
+const crypto = require('crypto');  // Added for webhook
+const bodyParser = require('body-parser');  // Added for webhook
+
 const redis = require('./configs/redis');
 const { tokenCheck } = require('./middlewares/tokenCheck');
+
 
 const app = express();
 
@@ -82,9 +85,62 @@ app.use('/api/webinars', tokenCheck, require('./routes/api/webinars'));
   *    DELETE  /api/meetings/:meetingId/recordings --> delete meeting recordings -
   */
 
+// Webhook route for zoom
+app.use(bodyParser.json()); // // Required for parsing application/json
+
+app.get('/', (req, res) => {
+  res.status(200).send('Servic ruuning. Add /webhook for wehhook endpoint.');
+});
+
+app.post('/webhook', (req, res) => {
+  console.log('Received POST request on /webhook');
+
+  console.log('Headers:', req.headers);
+  console.log('Body:', req.body);
+
+  // construct the message string for signature verification
+  const message = `v0:${req.headers['x-zm-request-timestamp']}:${JSON.stringify(req.body)}`;
+  const hashForVerify = crypto.createHmac('sha256', process.env.ZOOM_WEBHOOK_SECRET_TOKEN).update(message).digest('hex');
+  const signature = `v0=${hashForVerify}`;
+
+  if (req.headers['x-zm-signature'] === signature) {
+    console.log('Signature is valid.');
+
+    if (req.body.event === 'endpoint.url_validation') {
+      console.log('Handling endpoint.url_validation event');
+      const hashForValidate = crypto.createHmac('sha256', process.env.ZOOM_WEBHOOK_SECRET_TOKEN).update(req.body.payload.plainToken).digest('hex');
+
+      const responseMessage = {
+        plainToken: req.body.payload.plainToken,
+        encryptedToken: hashForValidate
+      };
+
+      console.log('Validation response:', responseMessage);
+      res.status(200).json(responseMessage);
+    } else {
+      // Assuming other events do not require a specific response structure
+      console.log('Handling other event:', req.body.event);
+      const responseMessage = { message: 'Webhook received and processed.' };
+
+      console.log('Event response:', responseMessage);
+      res.status(200).json(responseMessage);
+
+      // TODO: Add business logic for other events here
+    }
+  } else {
+    console.log('Invalid signature. Unauthorized request.');
+    res.status(401).json({ message: 'Unauthorized request to Zoom Webhook sample.' });
+  }
+})
+
+
+
+
+
 const PORT = process.env.PORT || 5500;
 
 const server = app.listen(PORT, () => console.log(`Listening on port ${[PORT]}!`));
+
 
 /**
   * Graceful shutdown, removes access_token from redis
