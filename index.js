@@ -1,150 +1,150 @@
-/**
- * dotenv gives us access to private variables held in a .env file
- * never expose this .env file publicly
- */
 require('dotenv').config();
+
 const express = require('express');
 const cors = require('cors');
 const cookieParser = require('cookie-parser');
-const { debug } = require('node:console');
-
-const crypto = require('crypto');  // Added for webhook
-const bodyParser = require('body-parser');  // Added for webhook
+const { debug, Console } = require('node:console');
+const crypto = require('crypto');
+const axios = require('axios');
+const qs = require('query-string');
 
 const redis = require('./configs/redis');
 const { tokenCheck } = require('./middlewares/tokenCheck');
-
+require('./utils/emailService'); // Adjust path as necessary
 
 const app = express();
 
-/**
-   * Default connection to redis - port 6379
-   * See https://github.com/redis/node-redis/blob/master/docs/client-configuration.md for additional config objects
-   */
 (async () => {
-  await redis.connect();
+  try {
+    await redis.connect();
+    console.log('Connected to redis successfully');
+  } catch (err) {
+    console.error('Could not establish connection with redis:', err);
+  }
 })();
 
-redis.on('connect', (err) => {
-  if (err) {
-    console.log('Could not establish connection with redis');
-  } else {
-    console.log('Connected to redis successfully');
-  }
-});
-
+app.use(cors());
+app.use(express.json());
+app.use(express.urlencoded({ extended: false }));
 app.use(cookieParser());
-
-// Add Global Middlewares
-app.use([
-  cors(),
-  express.json(),
-  express.urlencoded({ extended: false }),
-]);
 
 app.options('*', cors());
 
-/**
-  * Add API Routes w/ tokenCheck middleware
-  */
 app.use('/api/users', tokenCheck, require('./routes/api/users'));
-app.use('/api/meetings', tokenCheck, require('./routes/api/meetings'));
 app.use('/api/webinars', tokenCheck, require('./routes/api/webinars'));
 
-/**
-  *    API Route Breakdown:
-  *
-  *    __Users__
-  *    GET     /api/users --> list users -
-  *    POST    /api/users/add --> create users -
-  *    GET     /api/users/:userId --> get a user -
-  *    GET     /api/users/:userId/settings --> get user settings -
-  *    PATCH   /api/users/:userId/settings --> update user settings -
-  *    PATCH   /api/users/:userId --> update a user -
-  *    DELETE  /api/users/:userId --> delete a user -
-  *    GET     /api/users/:userId/meetings --> list meetings -
-  *    GET     /api/users/:userId/webinars --> list webinars -
-  *    GET     /api/users/:userId/recordings --> list all recordings -
-  *
-  *    __Webinars__
-  *    GET     /api/webinars/:webinarId --> get a webinar -
-  *    POST    /api/webinars/:userId --> create a webinar -
-  *    DELETE  /api/webinars/:webinarId --> delete a webinar
-  *    PATCH   /api/webinars/:webinarId --> update a webinar -
-  *    GET     /api/webinars/:webinarId/registrants --> list webinar registrants -
-  *    PUT     /api/webinars/:webinarId/registrants/status --> update registrant's status -
-  *    GET     /api/webinars/:webinarId/report/participants --> get webinar participant reports -
-  *    POST    /api/webinars/:webinarId/registrants --> add a webinar registrant -
-  *
-  *    __Meetings__
-  *    GET     /api/meetings/:meetingId --> get a meeting -
-  *    POST    /api/meetings/:userId -> create a meeting -
-  *    PATCH   /api/meetings/:meetingId --> update a meeting -
-  *    DELETE  /api/meetings/:meetingId --> delete a meeting -
-  *    GET     /api/meetings/:meetingId/report/participants --> get meeting participant reports -
-  *    DELETE  /api/meetings/:meetingId/recordings --> delete meeting recordings -
-  */
+const handleMeetingParticipantsReport = require('./routes/api/handleMeetingParticipantsReport'); // Adjust the path as necessary
 
-// Webhook route for zoom
-app.use(bodyParser.json()); // // Required for parsing application/json
 
-app.get('/', (req, res) => {
-  res.status(200).send('Servic ruuning. Add /webhook for wehhook endpoint.');
-});
+const ZOOM_OAUTH_ENDPOINT = 'https://zoom.us/oauth/token';
+const ZOOM_API_BASE_URL = 'https://api.zoom.us/v2';
 
-app.post('/webhook', (req, res) => {
-  console.log('Received POST request on /webhook');
 
-  console.log('Headers:', req.headers);
-  console.log('Body:', req.body);
+const getToken = async () => {
+  try {
+    const response = await axios.post(
+      ZOOM_OAUTH_ENDPOINT,
+      qs.stringify({
+        grant_type: 'account_credentials',
+        account_id: process.env.ZOOM_ACCOUNT_ID
+      }), {
+      headers: {
+        'Authorization': `Basic ${Buffer.from(`${process.env.ZOOM_CLIENT_ID}:${process.env.ZOOM_CLIENT_SECRET}`).toString('base64')}`,
+      }
+    });
+    const { access_token } = response.data;
+    await redis.set('access_token', access_token, 'EX', 3600); // Store token in Redis with an expiration
+    return access_token;
+  } catch (error) {
+    console.error('Failed to get Zoom access token:', error);
+    return null;
+  }
+};
 
-  // construct the message string for signature verification
+// Webhook endpoint to handle incoming Zoom notifications
+app.post('/webhook', async (req, res) => {
+  res.send('webhook');
+  console.log(req.headers);
+  console.log(req.body);
+
+  // construct the message string
   const message = `v0:${req.headers['x-zm-request-timestamp']}:${JSON.stringify(req.body)}`;
   const hashForVerify = crypto.createHmac('sha256', process.env.ZOOM_WEBHOOK_SECRET_TOKEN).update(message).digest('hex');
   const signature = `v0=${hashForVerify}`;
 
   if (req.headers['x-zm-signature'] === signature) {
-    console.log('Signature is valid.');
+    try {
+      if (req.body.event === 'endpoint.url_validation') {
+        const hashForValidate = crypto.createHmac('sha256', process.env.ZOOM_WEBHOOK_SECRET_TOKEN)
+          .update(req.body.payload.plainToken).digest('hex');
 
-    if (req.body.event === 'endpoint.url_validation') {
-      console.log('Handling endpoint.url_validation event');
-      const hashForValidate = crypto.createHmac('sha256', process.env.ZOOM_WEBHOOK_SECRET_TOKEN).update(req.body.payload.plainToken).digest('hex');
+        res.status(200).json({
+          plainToken: req.body.payload.plainToken,
+          encryptedToken: hashForValidate
+        });
+      } else if (req.body.event === 'meeting.ended') {
+        const meetingId = req.body.payload.object.id; // Extract meeting ID
+        const meetingDetails = {
+          duration: req.body.payload.object.duration,
+          startTime: req.body.payload.object.start_time,
+          endTime: req.body.payload.object.end_time,
+          topic: req.body.payload.object.topic,
+      }
+      
+      console.log('this is meeting id:' + meetingId);
+      console.log('this is duration time:' + meetingDetails.duration);
+      console.log('this is start time:' + meetingDetails.startTime);
+      console.log('this is end time:' + meetingDetails.endTime);
+      console.log('this is topic:' + meetingDetails.topic);
 
-      const responseMessage = {
-        plainToken: req.body.payload.plainToken,
-        encryptedToken: hashForValidate
-      };
 
-      console.log('Validation response:', responseMessage);
-      res.status(200).json(responseMessage);
-    } else {
-      // Assuming other events do not require a specific response structure
-      console.log('Handling other event:', req.body.event);
-      const responseMessage = { message: 'Webhook received and processed.' };
 
-      console.log('Event response:', responseMessage);
-      res.status(200).json(responseMessage);
+        const accessToken = await getToken(); // Fetch the access token
 
-      // TODO: Add business logic for other events here
+        if (!accessToken || !meetingId) {
+          console.error('Failed to get access token or meeting ID');
+          return res.status(500).send('Error fetching token or meeting ID');
+        }
+
+        // Call handleMeetingParticipantsReport and await its processing
+        await handleMeetingParticipantsReport(meetingId, accessToken, meetingDetails);
+        res.status(200).send('Webhook received and processed');
+      }
+    } catch (error) {
+      console.error('Error in webhook handling:', error);
+      if (!res.headersSent) {
+        res.status(500).send('Server Error');
+      }
     }
   } else {
-    console.log('Invalid signature. Unauthorized request.');
     res.status(401).json({ message: 'Unauthorized request to Zoom Webhook sample.' });
   }
-})
+});
 
+// async function handleMeetingEnd(meetingId, accessToken) {
+//   console.log(`Handling ended meeting with ID: ${meetingId}`);
+//   console.log(`Using Access Token: ${accessToken}`);
 
+//   const headers = {
+//     'Authorization': `Bearer ${accessToken}`, // Ensure the Bearer token is properly formatted
+//     'Content-Type': 'application/json'
+//   };
 
+//   try {
+//     const response = await axios.get(`${ZOOM_API_BASE_URL}/meetings/${meetingId}`, { headers });
+//     console.log('Meeting details fetched successfully:', response.data);
+//     return response.data;
+//   } catch (error) {
+//     console.error('Failed to fetch meeting details:', error.response ? error.response.data : error.message);
+//     throw error; // Rethrow the error to handle it outside or log it
+//   }
+// }
 
 
 const PORT = process.env.PORT || 5500;
 
 const server = app.listen(PORT, () => console.log(`Listening on port ${[PORT]}!`));
 
-
-/**
-  * Graceful shutdown, removes access_token from redis
-  */
 const cleanup = async () => {
   debug('\nClosing HTTP server');
   await redis.del('access_token');

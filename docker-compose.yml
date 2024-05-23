@@ -5,6 +5,7 @@ services:
     image: redis
     ports:
       - '6379:6379'
+    restart: always
 
   dev:
     build:
@@ -18,7 +19,6 @@ services:
       - ./downloads:/app/downloads
       - ./savedCsv:/app/savedCsv
       - ./csvProcessed:/app/csvProcessed
-
     command: npm run dev
     environment:
       NODE_ENV: development
@@ -31,17 +31,18 @@ services:
     build:
       context: ./
       target: production
+    ports:
+      - '5500:5500'
     volumes:
       - .:/app
       - /app/node_modules
       - ./downloads:/app/downloads
       - ./savedCsv:/app/savedCsv
       - ./csvProcessed:/app/csvProcessed
-    ports:
-      - '5500:5500'
     command: npm run start
     environment:
       NODE_ENV: production
     depends_on:
       - redis
     restart: always
+

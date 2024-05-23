@@ -7,8 +7,10 @@ const { Parser } = require('json2csv');
 const moment = require('moment');
 const csv = require('csv-parser');
 
+
 const errorHandler = require('../../utils/errorHandler');
 const { ZOOM_API_BASE_URL } = require('../../constants');
+// const { getToken, setToken } = require('../../utils/token');
 
 const downloadJsonDir = '/app/downloads'; // Directory for downloads JSON files
 const savedCsvDir = '/app/savedCsv'; // Directory for save CSV files
@@ -17,15 +19,16 @@ const processedCsvDir = '/app/csvProcessed'; // Directory for processed CSVs
 
 const router = express.Router();
 
-// Ensure the processedCsv directory exists
-if (!fs.existsSync(processedCsvDir)) {
-    fs.mkdirSync(processedCsvDir, { recursive: true });
-}
 
-/**
- * Get a meeting
- * https://developers.zoom.us/docs/api/rest/reference/zoom-api/methods/#operation/meeting
- */
+// Ensure the processedCsv directory exists
+[downloadJsonDir, savedCsvDir, processedCsvDir].forEach(dir => {
+    if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+    }
+});
+
+
+
 router.get('/:meetingId', async (req, res) => {
     const { headerConfig, params } = req;
     const { meetingId } = params;
@@ -38,10 +41,7 @@ router.get('/:meetingId', async (req, res) => {
     }
 });
 
-/**
- * Create a meeting
- * https://developers.zoom.us/docs/api/rest/reference/zoom-api/methods/#operation/meetingCreate
- */
+
 router.post('/:userId', async (req, res) => {
     const { headerConfig, params, body } = req;
     const { userId } = params;
@@ -54,10 +54,7 @@ router.post('/:userId', async (req, res) => {
     }
 });
 
-/**
- * Update a meeting
- * https://developers.zoom.us/docs/api/rest/reference/zoom-api/methods/#operation/meetingUpdate
- */
+
 router.patch('/:meetingId', async (req, res) => {
     const { headerConfig, params, body } = req;
     const { meetingId } = params;
@@ -70,10 +67,6 @@ router.patch('/:meetingId', async (req, res) => {
     }
 });
 
-/**
- * Delete a meeting
- * https://developers.zoom.us/docs/api/rest/reference/zoom-api/methods/#operation/meetingDelete
- */
 router.delete('/:meetingId', async (req, res) => {
     const { headerConfig, params } = req;
     const { meetingId } = params;
@@ -85,6 +78,7 @@ router.delete('/:meetingId', async (req, res) => {
         return errorHandler(err, res, `Error deleting meeting: ${meetingId}`);
     }
 });
+
 
 // Utility function to read CSV file
 function readCsvFile(filePath) {
@@ -137,8 +131,6 @@ async function processZoomParticipation(file_path, output_directory) {
 }
 
 
-
-
 router.get('/:meetingId/report/participants', async (req, res) => {
     console.log(process.cwd());
     const { headerConfig, params, query } = req;
@@ -153,11 +145,7 @@ router.get('/:meetingId/report/participants', async (req, res) => {
         const filePath = path.join(downloadJsonDir, `${meetingId}_participants.json`);
         const csvFilePath = path.join(savedCsvDir, `${meetingId}_participants.csv`);
 
-        // Ensure the savedCsv directory exists
-        if (!fs.existsSync(savedCsvDir)) {
-            fs.mkdirSync(savedCsvDir, { recursive: true });
-        }
-
+        
         // Write the JSON file
         fs.writeFileSync(filePath, JSON.stringify(request.data, null, 2), 'utf8');
 
@@ -193,10 +181,6 @@ router.get('/:meetingId/report/participants', async (req, res) => {
     }
 });
 
-/**
- * Delete meeting recordings
- * https://developers.zoom.us/docs/api/rest/reference/zoom-api/methods/#operation/recordingDelete
- */
 router.delete('/:meetingId/recordings', async (req, res) => {
     const { headerConfig, params, query } = req;
     const { meetingId } = params;
@@ -209,5 +193,8 @@ router.delete('/:meetingId/recordings', async (req, res) => {
         return errorHandler(err, res, `Error deleting recordings for meeting: ${meetingId}`);
     }
 });
+
+
+
 
 module.exports = router;
